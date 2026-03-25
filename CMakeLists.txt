@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.5)
 project(hesai_lidar)
 
+cmake_policy(SET CMP0074 NEW)
+
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 14)
 endif()
@@ -64,6 +66,9 @@ ament_target_dependencies(PandarGeneral
 rosidl_get_typesupport_target(cpp_typesupport_target "${PROJECT_NAME}" "rosidl_typesupport_cpp")
 target_link_libraries(PandarGeneral ${cpp_typesupport_target})
 
+# Suppress warnings for vendored SDK code
+target_compile_options(PandarGeneral PRIVATE -w)
+
 # Build PandarGeneralSDK shared library from SDK source
 add_library(PandarGeneralSDK SHARED
     src/HesaiLidar_General_SDK/src/pandarGeneral_sdk.cc
@@ -84,6 +89,9 @@ target_link_libraries(PandarGeneralSDK
     Boost::thread
     pcap
 )
+
+# Suppress warnings for vendored SDK code
+target_compile_options(PandarGeneralSDK PRIVATE -w)
 
 # Build hesai_lidar_node executable
 add_executable(hesai_lidar_node

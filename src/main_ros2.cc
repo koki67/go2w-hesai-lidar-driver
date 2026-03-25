@@ -1,10 +1,10 @@
 #include <rclcpp/rclcpp.hpp>
 #include <hesai_lidar/msg/pandar_scan.hpp>
 #include <hesai_lidar/msg/pandar_packet.hpp>
-#include <image_transport/image_transport.h>
+#include <image_transport/image_transport.hpp>
 #include <pcl_conversions/pcl_conversions.h>
 #include <sensor_msgs/msg/point_cloud2.hpp>
-#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include "pandarGeneral_sdk/pandarGeneral_sdk.h"
 #include <fstream>
 #include <memory>
@@ -12,7 +12,8 @@
 #include <string>
 #include <functional>
 #include "std_msgs/msg/string.hpp"
-#include <boost/bind.hpp>
+#include <boost/bind/bind.hpp>
+using namespace boost::placeholders;
 
 using namespace std;
 namespace hesai_lidar
@@ -78,7 +79,7 @@ private:
     }
   }
 
-  void gpsCallback(int timestamp) {
+  void gpsCallback(int /*timestamp*/) {
 #ifdef PRINT_FLAG
       std::cout << "gps: " << timestamp << std::endl;
 #endif

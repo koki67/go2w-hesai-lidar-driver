@@ -99,7 +99,7 @@ std::string PandarGeneralSDK::GetLidarCalibration() {
   return correction_content_;
 }
 
-void PandarGeneralSDK::Start() {
+int PandarGeneralSDK::Start() {
 // LOG_FUNC();
   Stop();
 
@@ -110,6 +110,7 @@ void PandarGeneralSDK::Start() {
   enable_get_calibration_thr_ = true;
   get_calibration_thr_ = new boost::thread(
       boost::bind(&PandarGeneralSDK::GetCalibrationFromDevice, this));
+  return 0;
 }
 
 void PandarGeneralSDK::Stop() {

@@ -689,7 +689,7 @@ void PandarGeneral_Internal::Start() {
     lidar_recv_thr_ =
         new boost::thread(boost::bind(&PandarGeneral_Internal::RecvTask, this));
   } else {
-    pcap_reader_->start(boost::bind(&PandarGeneral_Internal::FillPacket, this, _1, _2, _3));
+    pcap_reader_->start(boost::bind(&PandarGeneral_Internal::FillPacket, this, boost::placeholders::_1, boost::placeholders::_2, boost::placeholders::_3));
   }
 }
 
@@ -778,7 +778,7 @@ void PandarGeneral_Internal::ProcessLiarPacket() {
     PandarPacket packet = *(m_PacketsBuffer.getIterCalc());
     m_PacketsBuffer.moveIterCalc();
     rawpacket.stamp.sec = floor(packet.stamp);
-    rawpacket.stamp.nsec = (packet.stamp - floor(packet.stamp))*1000000000;
+    rawpacket.stamp.nanosec = (packet.stamp - floor(packet.stamp))*1000000000;
     rawpacket.size = packet.size;
     rawpacket.data.resize(packet.size);
     memcpy(&rawpacket.data[0], &packet.data[0], packet.size);
@@ -1956,7 +1956,7 @@ void PandarGeneral_Internal::PushScanPacket(hesai_lidar::msg::PandarScan::Shared
     }
     else {                                                                  //pcap
       PandarPacket pkt;
-      pkt.stamp = scan->packets[i].stamp.sec + scan->packets[i].stamp.nsec / 1000000000.0;
+      pkt.stamp = scan->packets[i].stamp.sec + scan->packets[i].stamp.nanosec / 1000000000.0;
       pkt.size = scan->packets[i].size;
       memcpy(&pkt.data[0], &(scan->packets[i].data[0]), scan->packets[i].size);
       PushLiDARData(pkt);

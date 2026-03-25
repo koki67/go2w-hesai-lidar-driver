@@ -21,7 +21,7 @@
 #include "log.h"
 #include <sched.h>
 #include <tf2_ros/transform_listener.h>
-#include <geometry_msgs/TransformStamped.h>
+#include <geometry_msgs/msg/transform_stamped.hpp>
 #include <algorithm>
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -84,7 +84,7 @@ static const float pandar20_horizatal_azimuth_offset_map[] = {
 
 PandarGeneral_Internal::PandarGeneral_Internal(
     std::string device_ip, uint16_t lidar_port, uint16_t gps_port,
-    boost::function<void(boost::shared_ptr<PPointCloud>, double, hesai_lidar::PandarScanPtr)> pcl_callback,
+    boost::function<void(boost::shared_ptr<PPointCloud>, double, hesai_lidar::msg::PandarScan::SharedPtr)> pcl_callback,
     boost::function<void(double)> gps_callback, uint16_t start_angle, int tz,
     int pcl_type, std::string lidar_type, std::string frame_id, std::string timestampType,
     std::string lidar_correction_file, std::string multicast_ip, bool coordinate_correction_flag,
@@ -137,7 +137,7 @@ PandarGeneral_Internal::PandarGeneral_Internal(
 }
 
 PandarGeneral_Internal::PandarGeneral_Internal(std::string pcap_path, \
-    boost::function<void(boost::shared_ptr<PPointCloud>, double, hesai_lidar::PandarScanPtr)> \
+    boost::function<void(boost::shared_ptr<PPointCloud>, double, hesai_lidar::msg::PandarScan::SharedPtr)> \
     pcl_callback, uint16_t start_angle, int tz, int pcl_type, \
     std::string lidar_type, std::string frame_id, std::string timestampType,
     std::string lidar_correction_file, bool coordinate_correction_flag,
@@ -765,9 +765,9 @@ void PandarGeneral_Internal::ProcessLiarPacket() {
   int ret = 0;
 
   boost::shared_ptr<PPointCloud> outMsg(new PPointCloud());
-  hesai_lidar::PandarScanPtr scan(new hesai_lidar::PandarScan);
-  hesai_lidar::PandarPacket rawpacket;
-  if(!computeTransformToTarget(ros::Time::now()))
+  auto scan = std::make_shared<hesai_lidar::msg::PandarScan>();
+  hesai_lidar::msg::PandarPacket rawpacket;
+  if(!computeTransformToTarget(rclcpp::Clock().now()))
     return;
 
   while (enable_lidar_process_thr_) {
@@ -1872,7 +1872,7 @@ void PandarGeneral_Internal::CalcXTPointXYZIT(HS_LIDAR_XT_Packet *pkt, int block
   }
 }
 
-void PandarGeneral_Internal::EmitBackMessege(char chLaserNumber, boost::shared_ptr<PPointCloud> cld, hesai_lidar::PandarScanPtr scan) {
+void PandarGeneral_Internal::EmitBackMessege(char chLaserNumber, boost::shared_ptr<PPointCloud> cld, hesai_lidar::msg::PandarScan::SharedPtr scan) {
   if (pcl_type_) {
     for (int i=0; i<chLaserNumber; i++) {
       for (int j=0; j<m_vPointCloudList[i].size(); j++) {
@@ -1898,7 +1898,7 @@ void PandarGeneral_Internal::EmitBackMessege(char chLaserNumber, boost::shared_p
   }
 }
 
-void PandarGeneral_Internal::PushScanPacket(hesai_lidar::PandarScanPtr scan) {
+void PandarGeneral_Internal::PushScanPacket(hesai_lidar::msg::PandarScan::SharedPtr scan) {
   for(int i = 0; i < scan->packets.size(); i++) {
     if (scan->packets[i].data[0] == 0x47 && scan->packets[i].data[1] == 0x74){  //correction file
       if (got_lidar_correction_flag){
@@ -1992,8 +1992,8 @@ void PandarGeneral_Internal::SetEnvironmentVariableTZ(){
   }
 }
 
-hesai_lidar::PandarPacket PandarGeneral_Internal::SaveCorrectionFile(int laserNumber){
-  hesai_lidar::PandarPacket result;
+hesai_lidar::msg::PandarPacket PandarGeneral_Internal::SaveCorrectionFile(int laserNumber){
+  hesai_lidar::msg::PandarPacket result;
   std::stringstream content;
   content<< "Laser id,Elevation,Azimuth" << std::endl;
   for(int i = 0; i < laserNumber; i++){
@@ -2044,7 +2044,7 @@ void PandarGeneral_Internal::manage_tf_buffer()
     {
       if (!m_tf_buffer)
       {
-        m_tf_buffer = std::make_shared<tf2_ros::Buffer>();
+        m_tf_buffer = std::make_shared<tf2_ros::Buffer>(std::make_shared<rclcpp::Clock>(RCL_ROS_TIME));
         m_tf_listener = std::make_shared<tf2_ros::TransformListener>(*m_tf_buffer);
       }
     }
@@ -2056,41 +2056,41 @@ void PandarGeneral_Internal::manage_tf_buffer()
   }
 
   bool PandarGeneral_Internal::calculateTransformMatrix(Eigen::Affine3f& matrix, const std::string& target_frame,
-                                       const std::string& source_frame, const ros::Time& time)
+                                       const std::string& source_frame, const rclcpp::Time& time)
   {
     if (!m_tf_buffer)
     {
-      ROS_ERROR("tf buffer was not initialized yet");
+      RCLCPP_ERROR(rclcpp::get_logger("hesai_lidar"), "tf buffer was not initialized yet");
       return false;
     }
 
-    geometry_msgs::TransformStamped msg;
+    geometry_msgs::msg::TransformStamped msg;
     try
     {
-      msg = m_tf_buffer->lookupTransform(target_frame, source_frame, time, ros::Duration(0.2));
+      msg = m_tf_buffer->lookupTransform(target_frame, source_frame, time, rclcpp::Duration::from_seconds(0.2));
     }
     catch (tf2::LookupException& e)
     {
-      ROS_ERROR("%s", e.what());
+      RCLCPP_ERROR(rclcpp::get_logger("hesai_lidar"), "%s", e.what());
       return false;
     }
     catch (tf2::ExtrapolationException& e)
     {
-      ROS_ERROR("%s", e.what());
+      RCLCPP_ERROR(rclcpp::get_logger("hesai_lidar"), "%s", e.what());
       return false;
     }
 
-    const geometry_msgs::Quaternion& quaternion = msg.transform.rotation;
+    const auto& quaternion = msg.transform.rotation;
     Eigen::Quaternionf rotation(quaternion.w, quaternion.x, quaternion.y, quaternion.z);
 
-    const geometry_msgs::Vector3& origin = msg.transform.translation;
+    const auto& origin = msg.transform.translation;
     Eigen::Translation3f translation(origin.x, origin.y, origin.z);
 
     matrix = translation * rotation;
     return true;
   }
 
-  bool PandarGeneral_Internal::computeTransformToTarget(const ros::Time &scan_time)
+  bool PandarGeneral_Internal::computeTransformToTarget(const rclcpp::Time &scan_time)
   {
     if (m_sTargetFrame.empty())
     {
@@ -2101,7 +2101,7 @@ void PandarGeneral_Internal::manage_tf_buffer()
     return calculateTransformMatrix(m_tf_matrix_to_target, m_sTargetFrame, source_frame, scan_time);
   }
 
-  bool PandarGeneral_Internal::computeTransformToFixed(const ros::Time &packet_time)
+  bool PandarGeneral_Internal::computeTransformToFixed(const rclcpp::Time &packet_time)
   {
     if (m_sFixedFrame.empty())
     {

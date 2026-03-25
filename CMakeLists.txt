@@ -54,6 +54,13 @@ target_link_libraries(PandarGeneral
     Boost::thread
     pcap
 )
+ament_target_dependencies(PandarGeneral
+    rclcpp
+    tf2
+    tf2_ros
+    geometry_msgs
+    tf2_geometry_msgs
+)
 rosidl_get_typesupport_target(cpp_typesupport_target "${PROJECT_NAME}" "rosidl_typesupport_cpp")
 target_link_libraries(PandarGeneral ${cpp_typesupport_target})
 

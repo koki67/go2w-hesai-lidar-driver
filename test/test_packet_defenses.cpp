@@ -13,13 +13,13 @@ std::vector<std::uint8_t> packetWithSequence(std::size_t size,
                                              std::uint32_t sequence,
                                              std::uint8_t factory = 0xa5u) {
   std::vector<std::uint8_t> packet(size, 0);
-  const std::size_t offset = size - hesai_lidar::internal::kXtFactorySize -
-                             hesai_lidar::internal::kXtSequenceSize;
+  const std::size_t offset =
+      size - hesai_lidar::internal::kXtSequenceSize;
+  packet[offset - hesai_lidar::internal::kXtFactorySize] = factory;
   packet[offset] = static_cast<std::uint8_t>(sequence & 0xffu);
   packet[offset + 1] = static_cast<std::uint8_t>((sequence >> 8) & 0xffu);
   packet[offset + 2] = static_cast<std::uint8_t>((sequence >> 16) & 0xffu);
   packet[offset + 3] = static_cast<std::uint8_t>((sequence >> 24) & 0xffu);
-  packet[size - 1] = factory;
   return packet;
 }
 
@@ -46,7 +46,7 @@ TEST(XtUdpSequence, DecodesAllSupportedPacketSizes) {
       unsupported.data(), unsupported.size(), &decoded));
 }
 
-TEST(XtUdpSequence, IgnoresTrailingFactoryByte) {
+TEST(XtUdpSequence, IgnoresPrecedingFactoryByte) {
   const auto first = packetWithSequence(
       hesai_lidar::internal::kXt16PacketSize, 0x04030201u, 0x00u);
   const auto second = packetWithSequence(

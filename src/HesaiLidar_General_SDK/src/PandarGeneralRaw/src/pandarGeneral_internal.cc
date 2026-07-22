@@ -188,6 +188,19 @@ PandarGeneral_Internal::PandarGeneral_Internal(std::string pcap_path, \
 
 PandarGeneral_Internal::~PandarGeneral_Internal() {
   Stop();
+  RCLCPP_INFO(
+      rclcpp::get_logger("hesai_lidar"),
+      "Hesai packet diagnostics: queue_overload_drops=%llu, "
+      "sequence_gap_packets=%llu, sequence_duplicates=%llu, "
+      "sequence_backwards=%llu, sequence_restarts=%llu, "
+      "packet_timestamp_regressions=%llu, empty_cloud_drops=%llu",
+      static_cast<unsigned long long>(m_queueOverloadDrops.load()),
+      static_cast<unsigned long long>(m_sequenceGapPackets.load()),
+      static_cast<unsigned long long>(m_sequenceDuplicates.load()),
+      static_cast<unsigned long long>(m_sequenceBackwards.load()),
+      static_cast<unsigned long long>(m_sequenceRestarts.load()),
+      static_cast<unsigned long long>(m_packetTimestampRegressions.load()),
+      static_cast<unsigned long long>(m_emptyCloudDrops.load()));
   sem_destroy(&lidar_sem_);
   pthread_mutex_destroy(&lidar_lock_);
 
@@ -680,8 +693,17 @@ void PandarGeneral_Internal::ResetStartAngle(uint16_t start_angle) {
 void PandarGeneral_Internal::Start() {
   // LOG_FUNC();
   Stop();
-  enable_lidar_recv_thr_ = true;
-  enable_lidar_process_thr_ = true;
+  m_PacketsBuffer.reset();
+  m_packetTimestampGuard.reset();
+  m_xtSequenceTracker.reset();
+  last_azimuth_ = 0;
+  last_timestamp_ = 0.0;
+  m_iPointCloudIndex = 0;
+  for (auto &points : m_vPointCloudList) {
+    points.clear();
+  }
+  enable_lidar_recv_thr_.store(true, std::memory_order_release);
+  enable_lidar_process_thr_.store(true, std::memory_order_release);
   lidar_process_thr_ = new boost::thread(
       boost::bind(&PandarGeneral_Internal::ProcessLiarPacket, this));
 
@@ -694,13 +716,11 @@ void PandarGeneral_Internal::Start() {
 }
 
 void PandarGeneral_Internal::Stop() {
-  enable_lidar_recv_thr_ = false;
-  enable_lidar_process_thr_ = false;
+  enable_lidar_recv_thr_.store(false, std::memory_order_release);
+  enable_lidar_process_thr_.store(false, std::memory_order_release);
 
-  if (lidar_process_thr_) {
-    lidar_process_thr_->join();
-    delete lidar_process_thr_;
-    lidar_process_thr_ = NULL;
+  if (pcap_reader_ != NULL) {
+    pcap_reader_->stop();
   }
 
   if (lidar_recv_thr_) {
@@ -709,9 +729,15 @@ void PandarGeneral_Internal::Stop() {
     lidar_recv_thr_ = NULL;
   }
 
-  if (pcap_reader_ != NULL) {
-    pcap_reader_->stop();
+  if (lidar_process_thr_) {
+    lidar_process_thr_->join();
+    delete lidar_process_thr_;
+    lidar_process_thr_ = NULL;
   }
+
+  m_PacketsBuffer.reset();
+  m_packetTimestampGuard.reset();
+  m_xtSequenceTracker.reset();
 
   return;
 }
@@ -728,7 +754,7 @@ void PandarGeneral_Internal::RecvTask() {
   pthread_getschedparam(pthread_self(), &ret_policy, &param);
   printf("publishRawDataThread:get thead %lu, policy %d and priority %d\n",
            pthread_self(), ret_policy, param.sched_priority);
-  while (enable_lidar_recv_thr_) {
+  while (enable_lidar_recv_thr_.load(std::memory_order_acquire)) {
     PandarPacket pkt;
     int rc = input_->getPacket(&pkt);
     if (rc == -1) {
@@ -770,13 +796,31 @@ void PandarGeneral_Internal::ProcessLiarPacket() {
   if(!computeTransformToTarget(rclcpp::Clock().now()))
     return;
 
-  while (enable_lidar_process_thr_) {
-    if (!m_PacketsBuffer.hasEnoughPackets()) {
+  while (enable_lidar_process_thr_.load(std::memory_order_acquire)) {
+    PandarPacket packet;
+    if (!m_PacketsBuffer.try_pop(packet)) {
       usleep(1000);
       continue;
     }
-    PandarPacket packet = *(m_PacketsBuffer.getIterCalc());
-    m_PacketsBuffer.moveIterCalc();
+
+    const auto timestamp_decision = m_packetTimestampGuard.observe(packet.stamp);
+    if (!timestamp_decision.accepted()) {
+      const std::uint64_t count =
+          m_packetTimestampRegressions.fetch_add(1) + 1;
+      RCLCPP_WARN_THROTTLE(
+          rclcpp::get_logger("hesai_lidar"), m_diagnosticClock, 5000,
+          "Dropping packet: reception timestamp event=%s previous=%.9f "
+          "current=%.9f regression=%.6f sec count=%llu",
+          timestamp_decision.status ==
+                  hesai_lidar::internal::TimestampStatus::kInvalid
+              ? "invalid"
+              : "regression",
+          timestamp_decision.previous, timestamp_decision.current,
+          timestamp_decision.regression_sec,
+          static_cast<unsigned long long>(count));
+      continue;
+    }
+
     rawpacket.stamp.sec = floor(packet.stamp);
     rawpacket.stamp.nanosec = (packet.stamp - floor(packet.stamp))*1000000000;
     rawpacket.size = packet.size;
@@ -970,6 +1014,51 @@ void PandarGeneral_Internal::ProcessLiarPacket() {
       if (ret != 0) {
         continue;
       }
+
+      const auto sequence_decision =
+          m_xtSequenceTracker.observe(pkt.udp_sequence, packet.stamp);
+      if (sequence_decision.status ==
+          hesai_lidar::internal::SequenceStatus::kForwardGap) {
+        const std::uint64_t missing_total =
+            m_sequenceGapPackets.fetch_add(sequence_decision.missing) +
+            sequence_decision.missing;
+        RCLCPP_WARN_THROTTLE(
+            rclcpp::get_logger("hesai_lidar"), m_diagnosticClock, 5000,
+            "XT UDP sequence gap: previous=%u current=%u missing=%u "
+            "missing_total=%llu",
+            sequence_decision.previous, sequence_decision.current,
+            sequence_decision.missing,
+            static_cast<unsigned long long>(missing_total));
+      } else if (sequence_decision.status ==
+                 hesai_lidar::internal::SequenceStatus::kDuplicate) {
+        const std::uint64_t count = m_sequenceDuplicates.fetch_add(1) + 1;
+        RCLCPP_WARN_THROTTLE(
+            rclcpp::get_logger("hesai_lidar"), m_diagnosticClock, 5000,
+            "Dropping duplicate XT UDP packet: sequence=%u count=%llu",
+            sequence_decision.current,
+            static_cast<unsigned long long>(count));
+        continue;
+      } else if (sequence_decision.status ==
+                 hesai_lidar::internal::SequenceStatus::kBackward) {
+        const std::uint64_t count = m_sequenceBackwards.fetch_add(1) + 1;
+        RCLCPP_WARN_THROTTLE(
+            rclcpp::get_logger("hesai_lidar"), m_diagnosticClock, 5000,
+            "Dropping backward XT UDP packet: previous=%u current=%u "
+            "count=%llu",
+            sequence_decision.previous, sequence_decision.current,
+            static_cast<unsigned long long>(count));
+        continue;
+      } else if (sequence_decision.status ==
+                 hesai_lidar::internal::SequenceStatus::kRestartAfterIdle) {
+        const std::uint64_t count = m_sequenceRestarts.fetch_add(1) + 1;
+        RCLCPP_WARN_THROTTLE(
+            rclcpp::get_logger("hesai_lidar"), m_diagnosticClock, 5000,
+            "Reset XT UDP sequence baseline after %.1f sec receive idle: "
+            "previous=%u current=%u count=%llu",
+            hesai_lidar::internal::kXtSequenceRestartIdleSec,
+            sequence_decision.previous, sequence_decision.current,
+            static_cast<unsigned long long>(count));
+      }
       scan->packets.push_back(rawpacket);
       for (int i = 0; i < pkt.header.chBlockNumber; ++i) {
         int azimuthGap = 0; /* To do */
@@ -1011,8 +1100,16 @@ void PandarGeneral_Internal::ProcessLiarPacket() {
   }
 }
 
-void PandarGeneral_Internal::PushLiDARData(PandarPacket packet) {
-  m_PacketsBuffer.push_back(packet);
+void PandarGeneral_Internal::PushLiDARData(const PandarPacket &packet) {
+  if (!m_PacketsBuffer.try_push(packet)) {
+    const std::uint64_t count = m_queueOverloadDrops.fetch_add(1) + 1;
+    RCLCPP_WARN_THROTTLE(
+        rclcpp::get_logger("hesai_lidar"), m_diagnosticClock, 5000,
+        "Dropping LiDAR packet: bounded queue backlog reached %zu packets "
+        "count=%llu",
+        m_PacketsBuffer.max_depth(),
+        static_cast<unsigned long long>(count));
+  }
 }
 
 void PandarGeneral_Internal::ProcessGps(const PandarGPS &gpsMsg) {
@@ -1398,6 +1495,31 @@ int PandarGeneral_Internal::ParseXTData(HS_LIDAR_XT_Packet *packet,
 
   if (packet->header.sob != 0xEEFF) {
     printf("Error Start of Packet!\n");
+    return -1;
+  }
+
+  const std::size_t block_count =
+      static_cast<unsigned char>(packet->header.chBlockNumber);
+  const std::size_t laser_count =
+      static_cast<unsigned char>(packet->header.chLaserNumber);
+  const std::size_t expected_size =
+      HS_LIDAR_XT_HEAD_SIZE +
+      block_count * (HS_LIDAR_XT_BLOCK_HEADER_AZIMUTH +
+                     laser_count * HS_LIDAR_XT_UNIT_SIZE) +
+      HS_LIDAR_XT_PACKET_TAIL_SIZE;
+  if (block_count == 0 || block_count > HS_LIDAR_XT_BLOCK_NUMBER ||
+      laser_count == 0 || laser_count > HS_LIDAR_XT_UNIT_NUM ||
+      expected_size != static_cast<std::size_t>(len)) {
+    RCLCPP_WARN_THROTTLE(
+        rclcpp::get_logger("hesai_lidar"), m_diagnosticClock, 5000,
+        "Invalid PandarXT packet layout: size=%d blocks=%zu lasers=%zu "
+        "expected=%zu",
+        len, block_count, laser_count, expected_size);
+    return -1;
+  }
+
+  if (!hesai_lidar::internal::decodeXtUdpSequence(
+          recvbuf, static_cast<std::size_t>(len), &packet->udp_sequence)) {
     return -1;
   }
 
@@ -1886,6 +2008,19 @@ void PandarGeneral_Internal::EmitBackMessege(char chLaserNumber, boost::shared_p
     cld->height = 1;
     m_iPointCloudIndex = 0;
   }
+  if (cld->points.empty()) {
+    const std::uint64_t count = m_emptyCloudDrops.fetch_add(1) + 1;
+    RCLCPP_WARN_THROTTLE(
+        rclcpp::get_logger("hesai_lidar"), m_diagnosticClock, 5000,
+        "Dropping empty point cloud before SDK callback: count=%llu",
+        static_cast<unsigned long long>(count));
+    if (pcl_type_) {
+      for (int i = 0; i < chLaserNumber; ++i) {
+        m_vPointCloudList[i].clear();
+      }
+    }
+    return;
+  }
   pcl_callback_(cld, cld->points[0].timestamp, scan); // the timestamp from first point cloud of cld
   if (pcl_type_) {
     for (int i=0; i<chLaserNumber; i++) {
@@ -2133,4 +2268,3 @@ void PandarGeneral_Internal::manage_tf_buffer()
   float PandarGeneral_Internal::GetFiretimeOffset(float spinSpeed, float deltMicrosecond) {
   return spinSpeed * deltMicrosecond * 6E-6;
 }
-

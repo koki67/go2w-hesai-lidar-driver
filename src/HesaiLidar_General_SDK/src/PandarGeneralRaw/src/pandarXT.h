@@ -1,6 +1,8 @@
 /**
  * Pandar XT
  */
+#include <cstdint>
+
 // Head
 #define HS_LIDAR_XT_HEAD_SIZE (12)
 // Body
@@ -67,6 +69,7 @@ typedef struct HS_LIDAR_XT_Packet_s{
     HS_LIDAR_XT_Header header;
     HS_LIDAR_XT_Block blocks[HS_LIDAR_XT_BLOCK_NUMBER];
     unsigned int timestamp; // ms
+    std::uint32_t udp_sequence;
     unsigned int echo;
     unsigned char addtime[6];
     double timestamp_point;
@@ -230,4 +233,3 @@ const float laserXTMOffset[HS_LIDAR_XT_UNIT_NUM] = {
     2.856f * 14.0f + 0.368f,
     2.856f * 15.0f + 0.368f
 };
-

@@ -118,6 +118,7 @@ ament_target_dependencies(hesai_lidar_node
 target_include_directories(hesai_lidar_node PRIVATE
     src/HesaiLidar_General_SDK/include
     src/HesaiLidar_General_SDK/src/PandarGeneralRaw/include
+    src/HesaiLidar_General_SDK/src/PandarGeneralRaw
     ${PCL_INCLUDE_DIRS}
     ${Boost_INCLUDE_DIRS}
 )
@@ -144,5 +145,21 @@ install(DIRECTORY launch
 
 install(DIRECTORY config
   DESTINATION share/${PROJECT_NAME})
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  find_package(Threads REQUIRED)
+
+  ament_add_gtest(test_bounded_spsc_queue
+    test/test_bounded_spsc_queue.cpp)
+  target_include_directories(test_bounded_spsc_queue PRIVATE
+    src/HesaiLidar_General_SDK/src/PandarGeneralRaw/src)
+  target_link_libraries(test_bounded_spsc_queue Threads::Threads)
+
+  ament_add_gtest(test_packet_defenses
+    test/test_packet_defenses.cpp)
+  target_include_directories(test_packet_defenses PRIVATE
+    src/HesaiLidar_General_SDK/src/PandarGeneralRaw/src)
+endif()
 
 ament_package()

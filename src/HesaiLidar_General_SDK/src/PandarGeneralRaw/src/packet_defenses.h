@@ -27,6 +27,8 @@ namespace internal {
 constexpr std::size_t kXt16PacketSize = 568;
 constexpr std::size_t kXtmPacketSize = 820;
 constexpr std::size_t kXt32PacketSize = 1080;
+constexpr std::size_t kXtSequenceSize = 4;
+constexpr std::size_t kXtFactorySize = 1;
 constexpr double kTimestampRegressionToleranceSec = 0.1;
 constexpr double kXtSequenceRestartIdleSec = 2.0;
 
@@ -41,7 +43,9 @@ inline bool decodeXtUdpSequence(const std::uint8_t *data, std::size_t size,
     return false;
   }
 
-  const std::size_t offset = size - 4;
+  // The XT tail ends with the four-byte UDP sequence followed by one factory
+  // byte. Decode the sequence before that trailing factory byte.
+  const std::size_t offset = size - kXtFactorySize - kXtSequenceSize;
   *sequence = static_cast<std::uint32_t>(data[offset]) |
               (static_cast<std::uint32_t>(data[offset + 1]) << 8) |
               (static_cast<std::uint32_t>(data[offset + 2]) << 16) |

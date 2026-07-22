@@ -10,12 +10,16 @@
 namespace {
 
 std::vector<std::uint8_t> packetWithSequence(std::size_t size,
-                                             std::uint32_t sequence) {
+                                             std::uint32_t sequence,
+                                             std::uint8_t factory = 0xa5u) {
   std::vector<std::uint8_t> packet(size, 0);
-  packet[size - 4] = static_cast<std::uint8_t>(sequence & 0xffu);
-  packet[size - 3] = static_cast<std::uint8_t>((sequence >> 8) & 0xffu);
-  packet[size - 2] = static_cast<std::uint8_t>((sequence >> 16) & 0xffu);
-  packet[size - 1] = static_cast<std::uint8_t>((sequence >> 24) & 0xffu);
+  const std::size_t offset = size - hesai_lidar::internal::kXtFactorySize -
+                             hesai_lidar::internal::kXtSequenceSize;
+  packet[offset] = static_cast<std::uint8_t>(sequence & 0xffu);
+  packet[offset + 1] = static_cast<std::uint8_t>((sequence >> 8) & 0xffu);
+  packet[offset + 2] = static_cast<std::uint8_t>((sequence >> 16) & 0xffu);
+  packet[offset + 3] = static_cast<std::uint8_t>((sequence >> 24) & 0xffu);
+  packet[size - 1] = factory;
   return packet;
 }
 
@@ -40,6 +44,22 @@ TEST(XtUdpSequence, DecodesAllSupportedPacketSizes) {
   std::uint32_t decoded = 0;
   EXPECT_FALSE(hesai_lidar::internal::decodeXtUdpSequence(
       unsupported.data(), unsupported.size(), &decoded));
+}
+
+TEST(XtUdpSequence, IgnoresTrailingFactoryByte) {
+  const auto first = packetWithSequence(
+      hesai_lidar::internal::kXt16PacketSize, 0x04030201u, 0x00u);
+  const auto second = packetWithSequence(
+      hesai_lidar::internal::kXt16PacketSize, 0x04030201u, 0xffu);
+  std::uint32_t first_decoded = 0;
+  std::uint32_t second_decoded = 0;
+
+  ASSERT_TRUE(hesai_lidar::internal::decodeXtUdpSequence(
+      first.data(), first.size(), &first_decoded));
+  ASSERT_TRUE(hesai_lidar::internal::decodeXtUdpSequence(
+      second.data(), second.size(), &second_decoded));
+  EXPECT_EQ(first_decoded, 0x04030201u);
+  EXPECT_EQ(second_decoded, 0x04030201u);
 }
 
 TEST(XtSequenceTracker, HandlesNormalGapDuplicateAndBackwardPackets) {

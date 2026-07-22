@@ -288,6 +288,11 @@ static_assert(HS_LIDAR_XTM_PACKET_SIZE == hesai_lidar::internal::kXtmPacketSize,
               "XTM packet size must match sequence decoder");
 static_assert(HS_LIDAR_XT_PACKET_SIZE == hesai_lidar::internal::kXt32PacketSize,
               "XT32 packet size must match sequence decoder");
+static_assert(HS_LIDAR_XT_SEQUENCE_SIZE ==
+                  hesai_lidar::internal::kXtSequenceSize,
+              "XT sequence size must match sequence decoder");
+static_assert(HS_LIDAR_XT_FACTORY_SIZE == hesai_lidar::internal::kXtFactorySize,
+              "XT factory size must match sequence decoder");
 using PacketsBuffer = BoundedSpscQueue<PandarPacket,
                                        PACKET_BUFFER_STORAGE_SIZE,
                                        MAX_PACKET_BACKLOG>;

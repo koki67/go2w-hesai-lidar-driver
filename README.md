@@ -10,8 +10,8 @@ The original Hesai driver (`HesaiLidar_General_ROS`) is ROS 1 only. This reposit
 
 | Topic | Type | Direction | Description |
 |---|---|---|---|
-| `/hesai_node/points_raw` | `sensor_msgs/msg/PointCloud2` | Publish | LiDAR point cloud |
-| `/hesai_node/pandar_packets` | `hesai_lidar/msg/PandarScan` | Publish | Raw UDP packets |
+| `/points_raw` | `sensor_msgs/msg/PointCloud2` | Publish | LiDAR point cloud |
+| `/pandar_packets` | `hesai_lidar/msg/PandarScan` | Publish | Raw UDP packets |
 | `/node_control` | `std_msgs/msg/String` | Subscribe | Send `"hesailidar_stop"` or `"all_stop"` to shutdown |
 
 ## Dependencies
@@ -49,6 +49,26 @@ Edit the launch file parameters or override them at launch time:
 | `data_type` | `""` | `""` for live/pcap, `"rosbag"` for bag playback |
 | `lidar_correction_file` | auto | Path to correction CSV |
 | `coordinate_correction_flag` | `false` | Enable coordinate correction |
+
+## Packet-order safety
+
+The driver uses a bounded single-producer/single-consumer packet queue. It
+retains 36,000 storage slots for compatibility but permits at most 400 queued
+packets; packets arriving while that backlog is full are dropped instead of
+blocking the receive thread.
+
+For PandarXT, PandarXT-16, PandarXT-32, and PandarXTM packets, the trailing UDP
+sequence is checked before point calculation. Forward gaps are counted, while
+duplicates and backward/reordered packets are dropped. A receive idle period of
+2 seconds resets the sequence baseline so a sensor reboot can recover, and
+normal `uint32` sequence rollover remains valid.
+
+Packet reception timestamps and published cloud timestamps may jitter backward
+by up to 0.1 seconds. Larger regressions, including the historical approximately
+7-second stale-packet replay, are dropped and reported. Queue overload, sequence,
+packet timestamp, and cloud timestamp events are emitted as throttled ROS logs;
+cumulative totals are logged during orderly shutdown. These checks prevent new
+corrupt output but do not rewrite or repair existing bags.
 
 ## Run
 

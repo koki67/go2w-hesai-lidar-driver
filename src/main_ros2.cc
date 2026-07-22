@@ -9,10 +9,12 @@
 #include <fstream>
 #include <memory>
 #include <chrono>
+#include <cstdint>
 #include <string>
 #include <functional>
 #include "std_msgs/msg/string.hpp"
 #include <boost/bind/bind.hpp>
+#include "src/packet_defenses.h"
 using namespace boost::placeholders;
 
 using namespace std;
@@ -21,7 +23,7 @@ namespace hesai_lidar
 class HesaiLidarClient: public rclcpp::Node
 {
 public:
-  HesaiLidarClient():Node("hesai_lidar")
+  HesaiLidarClient():Node("hesai_lidar"), hsdk(nullptr)
   {
     this->declare_parameter<std::string>("pcap_file", "");
     this->declare_parameter<std::string>("server_ip", "");
@@ -49,27 +51,63 @@ public:
     this->initialize_sdk();
   }
 
+  ~HesaiLidarClient() override
+  {
+    delete hsdk;
+    hsdk = nullptr;
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Hesai cloud diagnostics: empty_cloud_drops=%llu, "
+        "cloud_timestamp_regressions=%llu",
+        static_cast<unsigned long long>(emptyCloudDrops),
+        static_cast<unsigned long long>(cloudTimestampRegressions));
+  }
+
 private:
   void node_control_callback(const std_msgs::msg::String::SharedPtr msg) {
       if (msg->data == "hesailidar_stop" || msg->data == "all_stop") {
           rclcpp::shutdown();
           std::cout << "\033[1;31m" << "HesaiLidar is forced to stop" << "\033[0m" << std::endl;
-          exit(0);
       }
   }
 
   void lidarCallback(boost::shared_ptr<PPointCloud> cld, double timestamp, hesai_lidar::msg::PandarScan::SharedPtr scan)
   {
     if (m_sPublishType == "both" || m_sPublishType == "points") {
-      sensor_msgs::msg::PointCloud2 output;
-      pcl::toROSMsg(*cld, output);
-      output.header.stamp.sec = static_cast<int32_t>(timestamp);
-      output.header.stamp.nanosec = static_cast<uint32_t>((timestamp - output.header.stamp.sec) * 1e9);
-      lidarPublisher->publish(output);
+      if (!cld || cld->points.empty()) {
+        ++emptyCloudDrops;
+        RCLCPP_WARN_THROTTLE(
+            this->get_logger(), *this->get_clock(), 5000,
+            "Dropping empty point cloud before publish: count=%llu",
+            static_cast<unsigned long long>(emptyCloudDrops));
+      } else {
+        const auto timestampDecision = cloudTimestampGuard.observe(timestamp);
+        if (!timestampDecision.accepted()) {
+          ++cloudTimestampRegressions;
+          RCLCPP_WARN_THROTTLE(
+              this->get_logger(), *this->get_clock(), 5000,
+              "Dropping point cloud: timestamp event=%s previous=%.9f "
+              "current=%.9f regression=%.6f sec count=%llu",
+              timestampDecision.status ==
+                      hesai_lidar::internal::TimestampStatus::kInvalid
+                  ? "invalid"
+                  : "regression",
+              timestampDecision.previous, timestampDecision.current,
+              timestampDecision.regression_sec,
+              static_cast<unsigned long long>(cloudTimestampRegressions));
+        } else {
+          sensor_msgs::msg::PointCloud2 output;
+          pcl::toROSMsg(*cld, output);
+          output.header.stamp.sec = static_cast<int32_t>(timestamp);
+          output.header.stamp.nanosec = static_cast<uint32_t>(
+              (timestamp - output.header.stamp.sec) * 1e9);
+          lidarPublisher->publish(output);
 #ifdef PRINT_FLAG
-        std::cout.setf(ios::fixed);
-        std::cout << "timestamp: " << std::setprecision(10) << timestamp << ", point size: " << cld->points.size() << std::endl;
+          std::cout.setf(ios::fixed);
+          std::cout << "timestamp: " << std::setprecision(10) << timestamp << ", point size: " << cld->points.size() << std::endl;
 #endif
+        }
+      }
     }
     if (m_sPublishType == "both" || m_sPublishType == "raw") {
       packetPublisher->publish(*scan);
@@ -185,6 +223,9 @@ private:
   PandarGeneralSDK* hsdk;
   string m_sPublishType;
   string m_sTimestampType;
+  hesai_lidar::internal::TimestampGuard cloudTimestampGuard;
+  std::uint64_t emptyCloudDrops{0};
+  std::uint64_t cloudTimestampRegressions{0};
   rclcpp::Subscription<hesai_lidar::msg::PandarScan>::SharedPtr packetSubscriber;
 };
 }

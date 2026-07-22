@@ -43,9 +43,9 @@ inline bool decodeXtUdpSequence(const std::uint8_t *data, std::size_t size,
     return false;
   }
 
-  // The XT tail ends with the four-byte UDP sequence followed by one factory
-  // byte. Decode the sequence before that trailing factory byte.
-  const std::size_t offset = size - kXtFactorySize - kXtSequenceSize;
+  // The XT tail stores one factory byte immediately before the four-byte UDP
+  // sequence. The sequence therefore occupies the final four packet bytes.
+  const std::size_t offset = size - kXtSequenceSize;
   *sequence = static_cast<std::uint32_t>(data[offset]) |
               (static_cast<std::uint32_t>(data[offset + 1]) << 8) |
               (static_cast<std::uint32_t>(data[offset + 2]) << 16) |

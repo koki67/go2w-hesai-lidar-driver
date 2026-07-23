@@ -10,11 +10,14 @@
 #include <memory>
 #include <chrono>
 #include <cstdint>
+#include <exception>
 #include <stdexcept>
 #include <string>
 #include <functional>
+#include <thread>
 #include "std_msgs/msg/string.hpp"
 #include <boost/bind/bind.hpp>
+#include "latest_value_mailbox.h"
 #include "src/packet_defenses.h"
 using namespace boost::placeholders;
 
@@ -75,31 +78,54 @@ public:
         this->get_logger(),
         "Point cloud QoS: reliability=%s depth=%d",
         pointcloudReliability.c_str(), pointcloudQosDepth);
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Point cloud publish handoff: asynchronous latest-wins depth=1");
     sub_node_control = this->create_subscription<std_msgs::msg::String>(
         "/node_control", 10,
         std::bind(&HesaiLidarClient::node_control_callback, this, std::placeholders::_1));
 
-    this->initialize_sdk();
+    cloudPublishThread = std::thread(
+        &HesaiLidarClient::publishPointClouds, this);
+    try {
+      this->initialize_sdk();
+    } catch (...) {
+      delete hsdk;
+      hsdk = nullptr;
+      cloudPublishMailbox.stop();
+      cloudPublishThread.join();
+      throw;
+    }
   }
 
   ~HesaiLidarClient() override
   {
     delete hsdk;
     hsdk = nullptr;
+    cloudPublishMailbox.stop();
+    if (cloudPublishThread.joinable()) {
+      cloudPublishThread.join();
+    }
     RCLCPP_INFO(
         this->get_logger(),
         "Hesai cloud diagnostics: empty_cloud_drops=%llu, "
-        "cloud_timestamp_regressions=%llu, clouds_published=%llu, "
+        "cloud_timestamp_regressions=%llu, clouds_enqueued=%llu, "
+        "cloud_queue_overwrites=%llu, cloud_publish_failures=%llu, "
+        "clouds_published=%llu, "
         "conversion_avg_ms=%.3f, conversion_max_ms=%.3f, "
         "cloud_publish_avg_ms=%.3f, cloud_publish_max_ms=%.3f, "
         "raw_scans_published=%llu, raw_publish_avg_ms=%.3f, "
         "raw_publish_max_ms=%.3f",
         static_cast<unsigned long long>(emptyCloudDrops),
         static_cast<unsigned long long>(cloudTimestampRegressions),
+        static_cast<unsigned long long>(cloudsEnqueued),
+        static_cast<unsigned long long>(cloudQueueOverwrites),
+        static_cast<unsigned long long>(cloudPublishFailures),
         static_cast<unsigned long long>(cloudsPublished),
-        averageMilliseconds(cloudConversionTotalNs, cloudsPublished),
+        averageMilliseconds(cloudConversionTotalNs, cloudsEnqueued),
         nanosecondsToMilliseconds(cloudConversionMaxNs),
-        averageMilliseconds(cloudPublishTotalNs, cloudsPublished),
+        averageMilliseconds(
+            cloudPublishTotalNs, cloudsPublished + cloudPublishFailures),
         nanosecondsToMilliseconds(cloudPublishMaxNs),
         static_cast<unsigned long long>(rawScansPublished),
         averageMilliseconds(rawPublishTotalNs, rawScansPublished),
@@ -143,6 +169,28 @@ private:
       }
   }
 
+  void publishPointClouds()
+  {
+    sensor_msgs::msg::PointCloud2 output;
+    while (cloudPublishMailbox.wait_pop(output)) {
+      const auto publishStarted = std::chrono::steady_clock::now();
+      try {
+        lidarPublisher->publish(output);
+        ++cloudsPublished;
+      } catch (const std::exception &error) {
+        ++cloudPublishFailures;
+        RCLCPP_ERROR_THROTTLE(
+            this->get_logger(), *this->get_clock(), 5000,
+            "Point cloud publish failed: %s count=%llu", error.what(),
+            static_cast<unsigned long long>(cloudPublishFailures));
+      }
+      const auto publishFinished = std::chrono::steady_clock::now();
+      recordDuration(
+          publishStarted, publishFinished, cloudPublishTotalNs,
+          cloudPublishMaxNs);
+    }
+  }
+
   void lidarCallback(boost::shared_ptr<PPointCloud> cld, double timestamp, hesai_lidar::msg::PandarScan::SharedPtr scan)
   {
     if (m_sPublishType == "both" || m_sPublishType == "points") {
@@ -174,16 +222,23 @@ private:
           output.header.stamp.sec = static_cast<int32_t>(timestamp);
           output.header.stamp.nanosec = static_cast<uint32_t>(
               (timestamp - output.header.stamp.sec) * 1e9);
-          const auto publishStarted = std::chrono::steady_clock::now();
-          lidarPublisher->publish(output);
-          const auto publishFinished = std::chrono::steady_clock::now();
+          const auto conversionFinished = std::chrono::steady_clock::now();
           recordDuration(
-              conversionStarted, publishStarted, cloudConversionTotalNs,
+              conversionStarted, conversionFinished, cloudConversionTotalNs,
               cloudConversionMaxNs);
-          recordDuration(
-              publishStarted, publishFinished, cloudPublishTotalNs,
-              cloudPublishMaxNs);
-          ++cloudsPublished;
+          const auto pushResult = cloudPublishMailbox.push(std::move(output));
+          if (pushResult !=
+              hesai_lidar::internal::LatestValuePushResult::kStopped) {
+            ++cloudsEnqueued;
+          }
+          if (pushResult ==
+              hesai_lidar::internal::LatestValuePushResult::kReplaced) {
+            ++cloudQueueOverwrites;
+            RCLCPP_WARN_THROTTLE(
+                this->get_logger(), *this->get_clock(), 5000,
+                "Replacing stale pending point cloud: count=%llu",
+                static_cast<unsigned long long>(cloudQueueOverwrites));
+          }
 #ifdef PRINT_FLAG
           std::cout.setf(ios::fixed);
           std::cout << "timestamp: " << std::setprecision(10) << timestamp << ", point size: " << cld->points.size() << std::endl;
@@ -312,8 +367,14 @@ private:
   string m_sPublishType;
   string m_sTimestampType;
   hesai_lidar::internal::TimestampGuard cloudTimestampGuard;
+  hesai_lidar::internal::LatestValueMailbox<sensor_msgs::msg::PointCloud2>
+      cloudPublishMailbox;
+  std::thread cloudPublishThread;
   std::uint64_t emptyCloudDrops{0};
   std::uint64_t cloudTimestampRegressions{0};
+  std::uint64_t cloudsEnqueued{0};
+  std::uint64_t cloudQueueOverwrites{0};
+  std::uint64_t cloudPublishFailures{0};
   std::uint64_t cloudsPublished{0};
   std::uint64_t cloudConversionTotalNs{0};
   std::uint64_t cloudConversionMaxNs{0};

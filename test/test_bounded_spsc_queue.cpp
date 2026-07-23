@@ -9,10 +9,13 @@
 TEST(BoundedSpscQueue, EmptyAndFullBehavior) {
   BoundedSpscQueue<int, 5, 4> queue;
   int value = -1;
+  std::size_t size_after_push = 0;
 
   EXPECT_FALSE(queue.try_pop(value));
-  EXPECT_TRUE(queue.try_push(0));
-  EXPECT_TRUE(queue.try_push(1));
+  EXPECT_TRUE(queue.try_push(0, &size_after_push));
+  EXPECT_EQ(size_after_push, 1u);
+  EXPECT_TRUE(queue.try_push(1, &size_after_push));
+  EXPECT_EQ(size_after_push, 2u);
   EXPECT_TRUE(queue.try_push(2));
   EXPECT_TRUE(queue.try_push(3));
   EXPECT_EQ(queue.approximate_size(), 4u);

@@ -10,6 +10,7 @@
 #include <memory>
 #include <chrono>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <functional>
 #include "std_msgs/msg/string.hpp"
@@ -41,9 +42,39 @@ public:
     this->declare_parameter<bool>("coordinate_correction_flag", false);
     this->declare_parameter<std::string>("target_frame", "");
     this->declare_parameter<std::string>("fixed_frame", "");
-    rclcpp::QoS qos(rclcpp::KeepLast(7));
-    lidarPublisher = this->create_publisher<sensor_msgs::msg::PointCloud2>("points_raw", 1000);
-    packetPublisher = this->create_publisher<hesai_lidar::msg::PandarScan>("pandar_packets", qos);
+    this->declare_parameter<std::string>(
+        "pointcloud_reliability", "reliable");
+    this->declare_parameter<int>("pointcloud_qos_depth", 1000);
+
+    std::string pointcloudReliability;
+    int pointcloudQosDepth = 0;
+    this->get_parameter("pointcloud_reliability", pointcloudReliability);
+    this->get_parameter("pointcloud_qos_depth", pointcloudQosDepth);
+    if (pointcloudQosDepth <= 0) {
+      throw std::invalid_argument("pointcloud_qos_depth must be positive");
+    }
+
+    rclcpp::QoS pointcloudQos(
+        rclcpp::KeepLast(static_cast<std::size_t>(pointcloudQosDepth)));
+    if (pointcloudReliability == "best_effort") {
+      pointcloudQos.best_effort();
+    } else if (pointcloudReliability == "reliable") {
+      pointcloudQos.reliable();
+    } else {
+      throw std::invalid_argument(
+          "pointcloud_reliability must be 'reliable' or 'best_effort'");
+    }
+
+    lidarPublisher =
+        this->create_publisher<sensor_msgs::msg::PointCloud2>(
+            "points_raw", pointcloudQos);
+    rclcpp::QoS packetQos(rclcpp::KeepLast(7));
+    packetPublisher = this->create_publisher<hesai_lidar::msg::PandarScan>(
+        "pandar_packets", packetQos);
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Point cloud QoS: reliability=%s depth=%d",
+        pointcloudReliability.c_str(), pointcloudQosDepth);
     sub_node_control = this->create_subscription<std_msgs::msg::String>(
         "/node_control", 10,
         std::bind(&HesaiLidarClient::node_control_callback, this, std::placeholders::_1));
@@ -58,12 +89,53 @@ public:
     RCLCPP_INFO(
         this->get_logger(),
         "Hesai cloud diagnostics: empty_cloud_drops=%llu, "
-        "cloud_timestamp_regressions=%llu",
+        "cloud_timestamp_regressions=%llu, clouds_published=%llu, "
+        "conversion_avg_ms=%.3f, conversion_max_ms=%.3f, "
+        "cloud_publish_avg_ms=%.3f, cloud_publish_max_ms=%.3f, "
+        "raw_scans_published=%llu, raw_publish_avg_ms=%.3f, "
+        "raw_publish_max_ms=%.3f",
         static_cast<unsigned long long>(emptyCloudDrops),
-        static_cast<unsigned long long>(cloudTimestampRegressions));
+        static_cast<unsigned long long>(cloudTimestampRegressions),
+        static_cast<unsigned long long>(cloudsPublished),
+        averageMilliseconds(cloudConversionTotalNs, cloudsPublished),
+        nanosecondsToMilliseconds(cloudConversionMaxNs),
+        averageMilliseconds(cloudPublishTotalNs, cloudsPublished),
+        nanosecondsToMilliseconds(cloudPublishMaxNs),
+        static_cast<unsigned long long>(rawScansPublished),
+        averageMilliseconds(rawPublishTotalNs, rawScansPublished),
+        nanosecondsToMilliseconds(rawPublishMaxNs));
   }
 
 private:
+  static void recordDuration(
+      const std::chrono::steady_clock::time_point &started,
+      const std::chrono::steady_clock::time_point &finished,
+      std::uint64_t &totalNanoseconds,
+      std::uint64_t &maximumNanoseconds)
+  {
+    const auto elapsed = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            finished - started).count());
+    totalNanoseconds += elapsed;
+    if (elapsed > maximumNanoseconds) {
+      maximumNanoseconds = elapsed;
+    }
+  }
+
+  static double nanosecondsToMilliseconds(std::uint64_t nanoseconds)
+  {
+    return static_cast<double>(nanoseconds) / 1000000.0;
+  }
+
+  static double averageMilliseconds(
+      std::uint64_t totalNanoseconds, std::uint64_t samples)
+  {
+    return samples == 0
+        ? 0.0
+        : nanosecondsToMilliseconds(totalNanoseconds) /
+              static_cast<double>(samples);
+  }
+
   void node_control_callback(const std_msgs::msg::String::SharedPtr msg) {
       if (msg->data == "hesailidar_stop" || msg->data == "all_stop") {
           rclcpp::shutdown();
@@ -96,12 +168,22 @@ private:
               timestampDecision.regression_sec,
               static_cast<unsigned long long>(cloudTimestampRegressions));
         } else {
+          const auto conversionStarted = std::chrono::steady_clock::now();
           sensor_msgs::msg::PointCloud2 output;
           pcl::toROSMsg(*cld, output);
           output.header.stamp.sec = static_cast<int32_t>(timestamp);
           output.header.stamp.nanosec = static_cast<uint32_t>(
               (timestamp - output.header.stamp.sec) * 1e9);
+          const auto publishStarted = std::chrono::steady_clock::now();
           lidarPublisher->publish(output);
+          const auto publishFinished = std::chrono::steady_clock::now();
+          recordDuration(
+              conversionStarted, publishStarted, cloudConversionTotalNs,
+              cloudConversionMaxNs);
+          recordDuration(
+              publishStarted, publishFinished, cloudPublishTotalNs,
+              cloudPublishMaxNs);
+          ++cloudsPublished;
 #ifdef PRINT_FLAG
           std::cout.setf(ios::fixed);
           std::cout << "timestamp: " << std::setprecision(10) << timestamp << ", point size: " << cld->points.size() << std::endl;
@@ -110,7 +192,13 @@ private:
       }
     }
     if (m_sPublishType == "both" || m_sPublishType == "raw") {
+      const auto publishStarted = std::chrono::steady_clock::now();
       packetPublisher->publish(*scan);
+      const auto publishFinished = std::chrono::steady_clock::now();
+      recordDuration(
+          publishStarted, publishFinished, rawPublishTotalNs,
+          rawPublishMaxNs);
+      ++rawScansPublished;
 #ifdef PRINT_FLAG
         std::cout << "raw size: " << scan->packets.size() << std::endl;
 #endif
@@ -226,6 +314,14 @@ private:
   hesai_lidar::internal::TimestampGuard cloudTimestampGuard;
   std::uint64_t emptyCloudDrops{0};
   std::uint64_t cloudTimestampRegressions{0};
+  std::uint64_t cloudsPublished{0};
+  std::uint64_t cloudConversionTotalNs{0};
+  std::uint64_t cloudConversionMaxNs{0};
+  std::uint64_t cloudPublishTotalNs{0};
+  std::uint64_t cloudPublishMaxNs{0};
+  std::uint64_t rawScansPublished{0};
+  std::uint64_t rawPublishTotalNs{0};
+  std::uint64_t rawPublishMaxNs{0};
   rclcpp::Subscription<hesai_lidar::msg::PandarScan>::SharedPtr packetSubscriber;
 };
 }

@@ -28,6 +28,7 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_msgs REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(PCL REQUIRED COMPONENTS io)
+find_package(Threads REQUIRED)
 
 ament_export_dependencies(rosidl_default_runtime)
 
@@ -127,6 +128,7 @@ target_link_libraries(hesai_lidar_node
     ${PCL_IO_LIBRARIES}
     ${Boost_SYSTEM_LIBRARY}
     PandarGeneralSDK
+    Threads::Threads
 )
 
 target_link_libraries(hesai_lidar_node ${cpp_typesupport_target})
@@ -148,7 +150,6 @@ install(DIRECTORY config
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
-  find_package(Threads REQUIRED)
 
   ament_add_gtest(test_bounded_spsc_queue
     test/test_bounded_spsc_queue.cpp)
@@ -160,6 +161,11 @@ if(BUILD_TESTING)
     test/test_packet_defenses.cpp)
   target_include_directories(test_packet_defenses PRIVATE
     src/HesaiLidar_General_SDK/src/PandarGeneralRaw/src)
+
+  ament_add_gtest(test_latest_value_mailbox
+    test/test_latest_value_mailbox.cpp)
+  target_include_directories(test_latest_value_mailbox PRIVATE src)
+  target_link_libraries(test_latest_value_mailbox Threads::Threads)
 endif()
 
 ament_package()

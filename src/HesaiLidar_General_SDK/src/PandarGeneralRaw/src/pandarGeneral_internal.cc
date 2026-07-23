@@ -193,14 +193,19 @@ PandarGeneral_Internal::~PandarGeneral_Internal() {
       "Hesai packet diagnostics: queue_overload_drops=%llu, "
       "sequence_gap_packets=%llu, sequence_duplicates=%llu, "
       "sequence_backwards=%llu, sequence_restarts=%llu, "
-      "packet_timestamp_regressions=%llu, empty_cloud_drops=%llu",
+      "packet_timestamp_regressions=%llu, empty_cloud_drops=%llu, "
+      "enqueued_packets=%llu, processed_packets=%llu, "
+      "max_queue_depth=%zu",
       static_cast<unsigned long long>(m_queueOverloadDrops.load()),
       static_cast<unsigned long long>(m_sequenceGapPackets.load()),
       static_cast<unsigned long long>(m_sequenceDuplicates.load()),
       static_cast<unsigned long long>(m_sequenceBackwards.load()),
       static_cast<unsigned long long>(m_sequenceRestarts.load()),
       static_cast<unsigned long long>(m_packetTimestampRegressions.load()),
-      static_cast<unsigned long long>(m_emptyCloudDrops.load()));
+      static_cast<unsigned long long>(m_emptyCloudDrops.load()),
+      static_cast<unsigned long long>(m_enqueuedPackets),
+      static_cast<unsigned long long>(m_processedPackets),
+      m_maxQueueDepthObserved);
   sem_destroy(&lidar_sem_);
   pthread_mutex_destroy(&lidar_lock_);
 
@@ -802,6 +807,7 @@ void PandarGeneral_Internal::ProcessLiarPacket() {
       usleep(1000);
       continue;
     }
+    ++m_processedPackets;
 
     const auto timestamp_decision = m_packetTimestampGuard.observe(packet.stamp);
     if (!timestamp_decision.accepted()) {
@@ -1101,7 +1107,8 @@ void PandarGeneral_Internal::ProcessLiarPacket() {
 }
 
 void PandarGeneral_Internal::PushLiDARData(const PandarPacket &packet) {
-  if (!m_PacketsBuffer.try_push(packet)) {
+  std::size_t queue_depth = 0;
+  if (!m_PacketsBuffer.try_push(packet, &queue_depth)) {
     const std::uint64_t count = m_queueOverloadDrops.fetch_add(1) + 1;
     RCLCPP_WARN_THROTTLE(
         rclcpp::get_logger("hesai_lidar"), m_diagnosticClock, 5000,
@@ -1109,6 +1116,11 @@ void PandarGeneral_Internal::PushLiDARData(const PandarPacket &packet) {
         "count=%llu",
         m_PacketsBuffer.max_depth(),
         static_cast<unsigned long long>(count));
+  } else {
+    ++m_enqueuedPackets;
+    if (queue_depth > m_maxQueueDepthObserved) {
+      m_maxQueueDepthObserved = queue_depth;
+    }
   }
 }
 

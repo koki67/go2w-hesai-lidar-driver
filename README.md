@@ -44,6 +44,8 @@ Edit the launch file parameters or override them at launch time:
 | `lidar_type` | `PandarXT-16` | Sensor model |
 | `frame_id` | `hesai_lidar` | TF frame ID |
 | `publish_type` | `both` | `"points"`, `"raw"`, or `"both"` |
+| `pointcloud_reliability` | `reliable` | `/points_raw` QoS: `"reliable"` or `"best_effort"` |
+| `pointcloud_qos_depth` | `1000` | Positive `/points_raw` keep-last history depth |
 | `timestamp_type` | `realtime` | `""` for LiDAR time, `"realtime"` for system time |
 | `pcap_file` | `""` | Path to pcap file (empty = live sensor) |
 | `data_type` | `""` | `""` for live/pcap, `"rosbag"` for bag playback |
@@ -70,12 +72,35 @@ packet timestamp, and cloud timestamp events are emitted as throttled ROS logs;
 cumulative totals are logged during orderly shutdown. These checks prevent new
 corrupt output but do not rewrite or repair existing bags.
 
+Point-cloud conversion hands each completed cloud to a dedicated DDS publisher
+thread through a single-slot latest-value mailbox. A slow subscriber therefore
+cannot block the packet decoder or create an old-cloud backlog. If DDS remains
+slower than cloud generation, the pending cloud is replaced by the newer cloud
+and `cloud_queue_overwrites` records the deliberate loss.
+
 ## Run
 
 ```bash
 source install/setup.bash
 ros2 launch hesai_lidar hesai_lidar_launch.py
 ```
+
+For high-rate multi-sensor recording, raw packet publication can be disabled
+when only the point cloud is required, and `/points_raw` can use the standard
+non-blocking sensor-data reliability behavior:
+
+```bash
+ros2 launch hesai_lidar hesai_lidar_launch.py \
+  publish_type:=points \
+  pointcloud_reliability:=best_effort \
+  pointcloud_qos_depth:=5
+```
+
+The launch defaults remain `both`, `reliable`, and depth `1000` for backward
+compatibility. Shutdown diagnostics report packet throughput, maximum packet
+queue depth, point-cloud conversion time, DDS publish time, publish failures,
+and latest-value overwrites so overloaded systems can distinguish decoder
+pressure from publisher backpressure.
 
 ## License
 

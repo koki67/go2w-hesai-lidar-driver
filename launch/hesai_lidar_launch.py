@@ -1,5 +1,8 @@
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from ament_index_python.packages import get_package_share_directory
 import os
 
@@ -8,6 +11,21 @@ def generate_launch_description():
         get_package_share_directory("hesai_lidar"), 'config', 'PandarXT-16.csv')
 
     return LaunchDescription([
+        DeclareLaunchArgument(
+            'publish_type',
+            default_value='both',
+            description='Publish points, raw packets, or both',
+        ),
+        DeclareLaunchArgument(
+            'pointcloud_reliability',
+            default_value='reliable',
+            description='QoS reliability for /points_raw',
+        ),
+        DeclareLaunchArgument(
+            'pointcloud_qos_depth',
+            default_value='1000',
+            description='QoS history depth for /points_raw',
+        ),
         Node(
             package='hesai_lidar',
             namespace='/',
@@ -23,7 +41,23 @@ def generate_launch_description():
                 {"lidar_type": "PandarXT-16"},
                 {"frame_id": "hesai_lidar"},
                 {"pcldata_type": 0},
-                {"publish_type": "both"},
+                {
+                    "publish_type": ParameterValue(
+                        LaunchConfiguration('publish_type'), value_type=str
+                    )
+                },
+                {
+                    "pointcloud_reliability": ParameterValue(
+                        LaunchConfiguration('pointcloud_reliability'),
+                        value_type=str,
+                    )
+                },
+                {
+                    "pointcloud_qos_depth": ParameterValue(
+                        LaunchConfiguration('pointcloud_qos_depth'),
+                        value_type=int,
+                    )
+                },
                 {"timestamp_type": "realtime"},
                 {"data_type": ""},
                 {"lidar_correction_file": lidar_correction_file},

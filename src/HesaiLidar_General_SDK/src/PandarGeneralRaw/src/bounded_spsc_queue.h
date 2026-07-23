@@ -37,15 +37,19 @@ class BoundedSpscQueue {
   BoundedSpscQueue(const BoundedSpscQueue &) = delete;
   BoundedSpscQueue &operator=(const BoundedSpscQueue &) = delete;
 
-  bool try_push(const T &value) {
+  bool try_push(const T &value, std::size_t *size_after_push = nullptr) {
     const std::size_t write = write_index_.load(std::memory_order_relaxed);
     const std::size_t read = read_index_.load(std::memory_order_acquire);
-    if (distance(read, write) >= MaxDepth) {
+    const std::size_t current_size = distance(read, write);
+    if (current_size >= MaxDepth) {
       return false;
     }
 
     storage_[write] = value;
     write_index_.store(next(write), std::memory_order_release);
+    if (size_after_push != nullptr) {
+      *size_after_push = current_size + 1;
+    }
     return true;
   }
 

@@ -474,6 +474,9 @@ class PandarGeneral_Internal {
   std::atomic<std::uint64_t> m_sequenceRestarts{0};
   std::atomic<std::uint64_t> m_packetTimestampRegressions{0};
   std::atomic<std::uint64_t> m_emptyCloudDrops{0};
+  std::uint64_t m_enqueuedPackets{0};
+  std::uint64_t m_processedPackets{0};
+  std::size_t m_maxQueueDepthObserved{0};
   bool m_bCoordinateCorrectionFlag;
   std::shared_ptr<tf2_ros::TransformListener> m_tf_listener;
   std::shared_ptr<tf2_ros::Buffer> m_tf_buffer;

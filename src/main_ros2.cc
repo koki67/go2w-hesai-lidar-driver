@@ -17,6 +17,7 @@
 #include <thread>
 #include "std_msgs/msg/string.hpp"
 #include <boost/bind/bind.hpp>
+#include "compact_pointcloud2.h"
 #include "latest_value_mailbox.h"
 #include "src/packet_defenses.h"
 using namespace boost::placeholders;
@@ -48,13 +49,20 @@ public:
     this->declare_parameter<std::string>(
         "pointcloud_reliability", "reliable");
     this->declare_parameter<int>("pointcloud_qos_depth", 1000);
+    this->declare_parameter<std::string>("pointcloud_layout", "compact");
 
     std::string pointcloudReliability;
     int pointcloudQosDepth = 0;
     this->get_parameter("pointcloud_reliability", pointcloudReliability);
     this->get_parameter("pointcloud_qos_depth", pointcloudQosDepth);
+    this->get_parameter("pointcloud_layout", m_sPointcloudLayout);
     if (pointcloudQosDepth <= 0) {
       throw std::invalid_argument("pointcloud_qos_depth must be positive");
+    }
+    if (m_sPointcloudLayout != "compact" &&
+        m_sPointcloudLayout != "legacy_pcl") {
+      throw std::invalid_argument(
+          "pointcloud_layout must be 'compact' or 'legacy_pcl'");
     }
 
     rclcpp::QoS pointcloudQos(
@@ -81,6 +89,12 @@ public:
     RCLCPP_INFO(
         this->get_logger(),
         "Point cloud publish handoff: asynchronous latest-wins depth=1");
+    RCLCPP_INFO(
+        this->get_logger(), "Point cloud layout: %s point_step=%u",
+        m_sPointcloudLayout.c_str(),
+        m_sPointcloudLayout == "compact"
+            ? hesai_lidar::internal::kCompactPointStep
+            : static_cast<std::uint32_t>(sizeof(PPoint)));
     sub_node_control = this->create_subscription<std_msgs::msg::String>(
         "/node_control", 10,
         std::bind(&HesaiLidarClient::node_control_callback, this, std::placeholders::_1));
@@ -218,7 +232,11 @@ private:
         } else {
           const auto conversionStarted = std::chrono::steady_clock::now();
           sensor_msgs::msg::PointCloud2 output;
-          pcl::toROSMsg(*cld, output);
+          if (m_sPointcloudLayout == "compact") {
+            output = hesai_lidar::internal::makeCompactPointCloud2(*cld);
+          } else {
+            pcl::toROSMsg(*cld, output);
+          }
           output.header.stamp.sec = static_cast<int32_t>(timestamp);
           output.header.stamp.nanosec = static_cast<uint32_t>(
               (timestamp - output.header.stamp.sec) * 1e9);
@@ -366,6 +384,7 @@ private:
   PandarGeneralSDK* hsdk;
   string m_sPublishType;
   string m_sTimestampType;
+  string m_sPointcloudLayout;
   hesai_lidar::internal::TimestampGuard cloudTimestampGuard;
   hesai_lidar::internal::LatestValueMailbox<sensor_msgs::msg::PointCloud2>
       cloudPublishMailbox;

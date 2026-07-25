@@ -166,6 +166,18 @@ if(BUILD_TESTING)
     test/test_latest_value_mailbox.cpp)
   target_include_directories(test_latest_value_mailbox PRIVATE src)
   target_link_libraries(test_latest_value_mailbox Threads::Threads)
+
+  ament_add_gtest(test_compact_pointcloud2
+    test/test_compact_pointcloud2.cpp)
+  target_include_directories(test_compact_pointcloud2 PRIVATE
+    src
+    src/HesaiLidar_General_SDK/src/PandarGeneralRaw/include
+    ${PCL_INCLUDE_DIRS})
+  ament_target_dependencies(test_compact_pointcloud2
+    pcl_conversions
+    sensor_msgs)
+  target_link_libraries(test_compact_pointcloud2
+    ${PCL_IO_LIBRARIES})
 endif()
 
 ament_package()

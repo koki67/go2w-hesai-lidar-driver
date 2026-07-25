@@ -14,6 +14,18 @@ The original Hesai driver (`HesaiLidar_General_ROS`) is ROS 1 only. This reposit
 | `/pandar_packets` | `hesai_lidar/msg/PandarScan` | Publish | Raw UDP packets |
 | `/node_control` | `std_msgs/msg/String` | Subscribe | Send `"hesailidar_stop"` or `"all_stop"` to shutdown |
 
+### Point-cloud wire layout
+
+The driver keeps PCL's aligned `PointXYZIT` type internally, but serializes
+`/points_raw` without PCL/Eigen padding. Each point is 26 bytes with the
+following fields and offsets: `x@0`, `y@4`, `z@8`, `intensity@12`,
+`timestamp@16`, and `ring@24`. Field names and datatypes are unchanged, so ROS
+consumers that use the PointCloud2 field metadata or `pcl::fromROSMsg` recover
+the same values. The compact layout removes only 22 padding bytes from the
+former 48-byte wire representation. `pointcloud_layout:=legacy_pcl` provides a
+runtime rollback to the former layout if an unverified consumer turns out to
+depend on its padding or offsets.
+
 ## Dependencies
 
 - ROS 2 (Foxy or later)
@@ -46,6 +58,7 @@ Edit the launch file parameters or override them at launch time:
 | `publish_type` | `both` | `"points"`, `"raw"`, or `"both"` |
 | `pointcloud_reliability` | `reliable` | `/points_raw` QoS: `"reliable"` or `"best_effort"` |
 | `pointcloud_qos_depth` | `1000` | Positive `/points_raw` keep-last history depth |
+| `pointcloud_layout` | `compact` | `"compact"` for 26-byte points or `"legacy_pcl"` for the former 48-byte PCL layout |
 | `timestamp_type` | `realtime` | `""` for LiDAR time, `"realtime"` for system time |
 | `pcap_file` | `""` | Path to pcap file (empty = live sensor) |
 | `data_type` | `""` | `""` for live/pcap, `"rosbag"` for bag playback |

@@ -26,6 +26,11 @@ def generate_launch_description():
             default_value='1000',
             description='QoS history depth for /points_raw',
         ),
+        DeclareLaunchArgument(
+            'pointcloud_layout',
+            default_value='compact',
+            description='PointCloud2 layout: compact or legacy_pcl',
+        ),
         Node(
             package='hesai_lidar',
             namespace='/',
@@ -56,6 +61,12 @@ def generate_launch_description():
                     "pointcloud_qos_depth": ParameterValue(
                         LaunchConfiguration('pointcloud_qos_depth'),
                         value_type=int,
+                    )
+                },
+                {
+                    "pointcloud_layout": ParameterValue(
+                        LaunchConfiguration('pointcloud_layout'),
+                        value_type=str,
                     )
                 },
                 {"timestamp_type": "realtime"},

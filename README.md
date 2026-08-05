@@ -59,6 +59,8 @@ Edit the launch file parameters or override them at launch time:
 | `pointcloud_reliability` | `reliable` | `/points_raw` QoS: `"reliable"` or `"best_effort"` |
 | `pointcloud_qos_depth` | `1000` | Positive `/points_raw` keep-last history depth |
 | `pointcloud_layout` | `compact` | `"compact"` for 26-byte points or `"legacy_pcl"` for the former 48-byte PCL layout |
+| `packet_reliability` | `reliable` | `/pandar_packets` QoS: `"reliable"` or `"best_effort"` |
+| `packet_qos_depth` | `7` | Positive `/pandar_packets` keep-last history depth |
 | `timestamp_type` | `realtime` | `""` for LiDAR time, `"realtime"` for system time |
 | `pcap_file` | `""` | Path to pcap file (empty = live sensor) |
 | `data_type` | `""` | `""` for live/pcap, `"rosbag"` for bag playback |
@@ -77,6 +79,15 @@ sequence is checked before point calculation. Forward gaps are counted, while
 duplicates and backward/reordered packets are dropped. A receive idle period of
 2 seconds resets the sequence baseline so a sensor reboot can recover, and
 normal `uint32` sequence rollover remains valid.
+
+When `data_type:=rosbag`, each incoming `PandarScan` can contain more packets
+than the live receiver's 400-packet backlog. That replay-only path waits for
+decoder queue space instead of applying the live overload-drop policy. The
+shutdown field `rosbag_backpressure_waits` records how many replay packet
+enqueues had to wait. A replay enqueue that cannot make progress for 30 seconds
+fails and increments `rosbag_backpressure_timeouts`. Live UDP reception remains
+non-blocking and continues to drop and report new packets when its bounded
+backlog is full.
 
 Packet reception timestamps and published cloud timestamps may jitter backward
 by up to 0.1 seconds. Larger regressions, including the historical approximately

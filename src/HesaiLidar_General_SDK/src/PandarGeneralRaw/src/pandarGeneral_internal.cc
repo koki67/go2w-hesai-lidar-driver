@@ -14,6 +14,7 @@
  * limitations under the License.
  *****************************************************************************/
 
+#include <chrono>
 #include <sstream>
 
 #include "src/input.h"
@@ -194,6 +195,8 @@ PandarGeneral_Internal::~PandarGeneral_Internal() {
       "sequence_gap_packets=%llu, sequence_duplicates=%llu, "
       "sequence_backwards=%llu, sequence_restarts=%llu, "
       "packet_timestamp_regressions=%llu, empty_cloud_drops=%llu, "
+      "rosbag_backpressure_waits=%llu, "
+      "rosbag_backpressure_timeouts=%llu, "
       "enqueued_packets=%llu, processed_packets=%llu, "
       "max_queue_depth=%zu",
       static_cast<unsigned long long>(m_queueOverloadDrops.load()),
@@ -203,6 +206,8 @@ PandarGeneral_Internal::~PandarGeneral_Internal() {
       static_cast<unsigned long long>(m_sequenceRestarts.load()),
       static_cast<unsigned long long>(m_packetTimestampRegressions.load()),
       static_cast<unsigned long long>(m_emptyCloudDrops.load()),
+      static_cast<unsigned long long>(m_rosbagBackpressureWaits.load()),
+      static_cast<unsigned long long>(m_rosbagBackpressureTimeouts.load()),
       static_cast<unsigned long long>(m_enqueuedPackets),
       static_cast<unsigned long long>(m_processedPackets),
       m_maxQueueDepthObserved);
@@ -1122,6 +1127,39 @@ void PandarGeneral_Internal::PushLiDARData(const PandarPacket &packet) {
       m_maxQueueDepthObserved = queue_depth;
     }
   }
+}
+
+bool PandarGeneral_Internal::PushRosbagLiDARData(
+    const PandarPacket &packet) {
+  std::size_t queue_depth = 0;
+  bool waited = false;
+  std::chrono::steady_clock::time_point wait_started;
+  while (enable_lidar_process_thr_.load(std::memory_order_acquire)) {
+    if (m_PacketsBuffer.try_push(packet, &queue_depth)) {
+      ++m_enqueuedPackets;
+      if (queue_depth > m_maxQueueDepthObserved) {
+        m_maxQueueDepthObserved = queue_depth;
+      }
+      if (waited) {
+        ++m_rosbagBackpressureWaits;
+      }
+      return true;
+    }
+    if (!waited) {
+      waited = true;
+      wait_started = std::chrono::steady_clock::now();
+    } else if (std::chrono::steady_clock::now() - wait_started >=
+               std::chrono::seconds(30)) {
+      const std::uint64_t count = m_rosbagBackpressureTimeouts.fetch_add(1) + 1;
+      RCLCPP_ERROR(
+          rclcpp::get_logger("hesai_lidar"),
+          "Timed out waiting for rosbag decoder queue space: count=%llu",
+          static_cast<unsigned long long>(count));
+      return false;
+    }
+    usleep(100);
+  }
+  return false;
 }
 
 void PandarGeneral_Internal::ProcessGps(const PandarGPS &gpsMsg) {
@@ -2046,19 +2084,35 @@ void PandarGeneral_Internal::EmitBackMessege(char chLaserNumber, boost::shared_p
 }
 
 void PandarGeneral_Internal::PushScanPacket(hesai_lidar::msg::PandarScan::SharedPtr scan) {
-  for(int i = 0; i < scan->packets.size(); i++) {
-    if (scan->packets[i].data[0] == 0x47 && scan->packets[i].data[1] == 0x74){  //correction file
+  if (!scan) {
+    RCLCPP_ERROR(rclcpp::get_logger("hesai_lidar"),
+                 "Ignoring null PandarScan from rosbag");
+    return;
+  }
+  for(std::size_t i = 0; i < scan->packets.size(); i++) {
+    const auto &message_packet = scan->packets[i];
+    const bool is_correction = message_packet.data.size() >= 2 &&
+        message_packet.data[0] == 0x47 && message_packet.data[1] == 0x74;
+    if (is_correction){  // correction file
       if (got_lidar_correction_flag){
         continue;
       }
       else{
         std::cout << "Load correction file from rosbag" << std::endl;
-        int correction_lenth = ((scan->packets[i].data[4] & 0xff) << 24) | ((scan->packets[i].data[5] & 0xff) << 16) | 
-                              ((scan->packets[i].data[6] & 0xff) << 8) | ((scan->packets[i].data[7] & 0xff) << 0);
-        if (correction_lenth == scan->packets[i].size){
-          char buffer[correction_lenth];
-          memcpy(buffer, &(scan->packets[i].data[8]), scan->packets[i].size);
-          std::string correction_string = std::string(buffer);
+        if (message_packet.data.size() < 8) {
+          RCLCPP_ERROR(rclcpp::get_logger("hesai_lidar"),
+                       "Ignoring truncated correction packet from rosbag");
+          continue;
+        }
+        int correction_length = ((message_packet.data[4] & 0xff) << 24) | ((message_packet.data[5] & 0xff) << 16) |
+                              ((message_packet.data[6] & 0xff) << 8) | ((message_packet.data[7] & 0xff) << 0);
+        if (correction_length == static_cast<int>(message_packet.size) &&
+            correction_length > 0 &&
+            static_cast<std::size_t>(correction_length) <=
+                message_packet.data.size() - 8){
+          std::string correction_string(
+              reinterpret_cast<const char *>(&message_packet.data[8]),
+              static_cast<std::size_t>(correction_length));
           int ret = LoadCorrectionFile(correction_string);
           if (ret != 0) {
             std::cout << "Load correction file from rosbag failed" << std::endl;
@@ -2102,11 +2156,23 @@ void PandarGeneral_Internal::PushScanPacket(hesai_lidar::msg::PandarScan::Shared
       }
     }
     else {                                                                  //pcap
+      if (message_packet.size == 0 ||
+          message_packet.size > message_packet.data.size() ||
+          message_packet.size > ETHERNET_MTU) {
+        RCLCPP_ERROR(
+            rclcpp::get_logger("hesai_lidar"),
+            "Ignoring invalid rosbag LiDAR packet: declared=%u data=%zu max=%d",
+            message_packet.size, message_packet.data.size(), ETHERNET_MTU);
+        continue;
+      }
       PandarPacket pkt;
-      pkt.stamp = scan->packets[i].stamp.sec + scan->packets[i].stamp.nanosec / 1000000000.0;
-      pkt.size = scan->packets[i].size;
-      memcpy(&pkt.data[0], &(scan->packets[i].data[0]), scan->packets[i].size);
-      PushLiDARData(pkt);
+      pkt.stamp = message_packet.stamp.sec +
+          message_packet.stamp.nanosec / 1000000000.0;
+      pkt.size = message_packet.size;
+      memcpy(&pkt.data[0], &(message_packet.data[0]), message_packet.size);
+      if (!PushRosbagLiDARData(pkt)) {
+        return;
+      }
     }
   }
 }

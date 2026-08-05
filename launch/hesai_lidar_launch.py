@@ -31,6 +31,21 @@ def generate_launch_description():
             default_value='compact',
             description='PointCloud2 layout: compact or legacy_pcl',
         ),
+        DeclareLaunchArgument(
+            'data_type',
+            default_value='',
+            description='Empty for live UDP; rosbag subscribes to PandarScan',
+        ),
+        DeclareLaunchArgument(
+            'packet_reliability',
+            default_value='reliable',
+            description='QoS reliability for /pandar_packets',
+        ),
+        DeclareLaunchArgument(
+            'packet_qos_depth',
+            default_value='7',
+            description='QoS history depth for /pandar_packets',
+        ),
         Node(
             package='hesai_lidar',
             namespace='/',
@@ -70,7 +85,23 @@ def generate_launch_description():
                     )
                 },
                 {"timestamp_type": "realtime"},
-                {"data_type": ""},
+                {
+                    "data_type": ParameterValue(
+                        LaunchConfiguration('data_type'), value_type=str
+                    )
+                },
+                {
+                    "packet_reliability": ParameterValue(
+                        LaunchConfiguration('packet_reliability'),
+                        value_type=str,
+                    )
+                },
+                {
+                    "packet_qos_depth": ParameterValue(
+                        LaunchConfiguration('packet_qos_depth'),
+                        value_type=int,
+                    )
+                },
                 {"lidar_correction_file": lidar_correction_file},
                 {"multicast_ip": ""},
                 {"coordinate_correction_flag": False},

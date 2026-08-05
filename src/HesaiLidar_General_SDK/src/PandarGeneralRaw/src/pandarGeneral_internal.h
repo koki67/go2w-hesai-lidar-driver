@@ -358,6 +358,7 @@ class PandarGeneral_Internal {
   void ProcessGps(const PandarGPS &gpsMsg);
   void ProcessLiarPacket();
   void PushLiDARData(const PandarPacket &packet);
+  bool PushRosbagLiDARData(const PandarPacket &packet);
   int ParseRawData(Pandar40PPacket *packet, const uint8_t *buf, const int len);
   int ParseL64Data(HS_LIDAR_L64_Packet *packet, const uint8_t *recvbuf, const int len);
   int ParseL20Data(HS_LIDAR_L20_Packet *packet, const uint8_t *recvbuf, const int len);
@@ -474,6 +475,8 @@ class PandarGeneral_Internal {
   std::atomic<std::uint64_t> m_sequenceRestarts{0};
   std::atomic<std::uint64_t> m_packetTimestampRegressions{0};
   std::atomic<std::uint64_t> m_emptyCloudDrops{0};
+  std::atomic<std::uint64_t> m_rosbagBackpressureWaits{0};
+  std::atomic<std::uint64_t> m_rosbagBackpressureTimeouts{0};
   std::uint64_t m_enqueuedPackets{0};
   std::uint64_t m_processedPackets{0};
   std::size_t m_maxQueueDepthObserved{0};

@@ -50,12 +50,18 @@ public:
         "pointcloud_reliability", "reliable");
     this->declare_parameter<int>("pointcloud_qos_depth", 1000);
     this->declare_parameter<std::string>("pointcloud_layout", "compact");
+    this->declare_parameter<std::string>("packet_reliability", "reliable");
+    this->declare_parameter<int>("packet_qos_depth", 7);
 
     std::string pointcloudReliability;
     int pointcloudQosDepth = 0;
+    std::string packetReliability;
+    int packetQosDepth = 0;
     this->get_parameter("pointcloud_reliability", pointcloudReliability);
     this->get_parameter("pointcloud_qos_depth", pointcloudQosDepth);
     this->get_parameter("pointcloud_layout", m_sPointcloudLayout);
+    this->get_parameter("packet_reliability", packetReliability);
+    this->get_parameter("packet_qos_depth", packetQosDepth);
     if (pointcloudQosDepth <= 0) {
       throw std::invalid_argument("pointcloud_qos_depth must be positive");
     }
@@ -63,6 +69,9 @@ public:
         m_sPointcloudLayout != "legacy_pcl") {
       throw std::invalid_argument(
           "pointcloud_layout must be 'compact' or 'legacy_pcl'");
+    }
+    if (packetQosDepth <= 0) {
+      throw std::invalid_argument("packet_qos_depth must be positive");
     }
 
     rclcpp::QoS pointcloudQos(
@@ -79,7 +88,16 @@ public:
     lidarPublisher =
         this->create_publisher<sensor_msgs::msg::PointCloud2>(
             "points_raw", pointcloudQos);
-    rclcpp::QoS packetQos(rclcpp::KeepLast(7));
+    rclcpp::QoS packetQos(
+        rclcpp::KeepLast(static_cast<std::size_t>(packetQosDepth)));
+    if (packetReliability == "best_effort") {
+      packetQos.best_effort();
+    } else if (packetReliability == "reliable") {
+      packetQos.reliable();
+    } else {
+      throw std::invalid_argument(
+          "packet_reliability must be 'reliable' or 'best_effort'");
+    }
     packetPublisher = this->create_publisher<hesai_lidar::msg::PandarScan>(
         "pandar_packets", packetQos);
     RCLCPP_INFO(
@@ -95,6 +113,10 @@ public:
         m_sPointcloudLayout == "compact"
             ? hesai_lidar::internal::kCompactPointStep
             : static_cast<std::uint32_t>(sizeof(PPoint)));
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Raw packet QoS: reliability=%s depth=%d",
+        packetReliability.c_str(), packetQosDepth);
     sub_node_control = this->create_subscription<std_msgs::msg::String>(
         "/node_control", 10,
         std::bind(&HesaiLidarClient::node_control_callback, this, std::placeholders::_1));
@@ -292,17 +314,17 @@ private:
   void initialize_sdk()
   {
     string serverIp;
-    int lidarRecvPort;
-    int gpsPort;
-    double startAngle;
+    int lidarRecvPort = 0;
+    int gpsPort = 0;
+    double startAngle = 0.0;
     string lidarCorrectionFile;
     string lidarType;
     string frameId;
-    int pclDataType;
+    int pclDataType = 0;
     string pcapFile;
     string dataType;
     string multicastIp;
-    bool coordinateCorrectionFlag;
+    bool coordinateCorrectionFlag = false;
     string targetFrame;
     string fixedFrame;
 
@@ -322,6 +344,15 @@ private:
     this->get_parameter("coordinate_correction_flag", coordinateCorrectionFlag);
     this->get_parameter("target_frame", targetFrame);
     this->get_parameter("fixed_frame", fixedFrame);
+
+    if (m_sPublishType != "points" && m_sPublishType != "raw" &&
+        m_sPublishType != "both") {
+      throw std::invalid_argument(
+          "publish_type must be 'points', 'raw', or 'both'");
+    }
+    if (!dataType.empty() && dataType != "rosbag") {
+      throw std::invalid_argument("data_type must be empty or 'rosbag'");
+    }
 
     RCLCPP_INFO(this->get_logger(), "server_ip: %s", serverIp.c_str());
 
